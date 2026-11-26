@@ -7,7 +7,11 @@ Description: >
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 3
+    # Tempo máximo de UMA execução, em segundos.
+    # Passo 5 do enunciado: com Timeout 3 a função que dorme 5 s é morta pelo
+    # ambiente (Duration 3000,00 ms, errResetReceived). Com Timeout 10 ela
+    # completa. Ver a seção 3.4 do README.
+    Timeout: 10
     MemorySize: 128
 
 Resources:

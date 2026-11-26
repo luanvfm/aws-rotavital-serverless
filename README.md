@@ -173,6 +173,35 @@ REPORT RequestId: 7f520c35-...  Duration: 3000.00 ms  Billed Duration: 3000 ms  
 O `time.sleep(5)` **nunca terminou**. A execução não falhou por um erro do código:
 foi interrompida pelo ambiente aplicando um limite declarado na infraestrutura.
 
+### 3.4 Ajuste do limite de tempo (`Timeout: 3` → `Timeout: 10`)
+
+Alterado o `Timeout` em `Globals: Function:` para 10 s, seguido de `sam build`, e a
+**mesma** requisição foi repetida:
+
+| | `Timeout: 3` | `Timeout: 10` |
+|---|---|---|
+| `Duration` | 3000,00 ms | **5032,41 ms** |
+| `Billed Duration` | 3000 ms | 5033 ms |
+| Erro do runtime | `errResetReceived` | — |
+| Resposta | `500 Internal server error` | **`201` com a guia emitida** |
+| Tempo de parede | 10,96 s | 12,70 s |
+
+Saída da execução bem-sucedida:
+
+```json
+{"statusCode": 201, "body": "{\"guia\": \"G-R-003\", \"hospital\": null, \"bolsas\": [], \"invocacaoNesteAmbiente\": 1}"}
+```
+
+Os `5032,41 ms` são os 5 segundos do `time.sleep(5)` mais a execução do resto do
+handler — a função rodou até o fim porque agora cabia dentro do limite.
+
+Note que `hospital` veio `null` e `bolsas` vazio: o evento deste teste só traz
+`requisicaoId` e `demorar`, e o código usa `.get()` com padrão em vez de acesso
+direto, então campos ausentes não quebram a função.
+
+> **Importante:** o `Timeout` ficou em **10 s** no repositório. Para reproduzir o
+> erro da seção 3.3, baixe para `3` e rode `sam build` novamente.
+
 ---
 
 ## 4. Respostas
@@ -261,6 +290,11 @@ dimensionado gera custo sem entregar valor.
 O tempo máximo de uma execução no AWS Lambda é de **15 minutos** (900 segundos). O
 padrão do SAM é 3 segundos, e é uma escolha deliberada: um limite baixo faz a falha
 aparecer rápido em vez de a função ficar pendurada consumindo tempo cobrado.
+
+Ao elevar o `Timeout` para 10 s e refazer o `sam build`, a **mesma** requisição
+passou a completar: `Duration: 5032,41 ms` e resposta `201` com a guia emitida (ver
+3.4). Isso confirma que o limite é da infraestrutura, não do código — nada no
+`app.py` mudou entre as duas execuções.
 
 Quando o trabalho é mais longo que o limite, aumentar o `Timeout` só adia o problema.
 As saídas reais são:
@@ -441,37 +475,36 @@ máquina. Resolvido com `--port 3001`.
 
 ## 6. Uso de IA
 
-Usei um assistente de IA (Claude, via Hermes) como par de programação durante toda a
-atividade. Declaro abaixo o que foi feito por cada parte.
+Declaração conforme a **PO-CESAR-021** (uso de IA permitido com declaração).
 
-**O que a IA fez:**
+| | |
+|---|---|
+| **Ferramenta** | Claude (Anthropic), via agente Hermes no terminal |
+| **Finalidade** | Explicação de conceitos, sugestão e explicação de comandos, diagnóstico de erros de ambiente e redação deste README |
+| **Como validei** | Executei todos os comandos nesta máquina e comparei o resultado real com o que a IA havia previsto; onde divergiu, corrigi o texto pela evidência (ver tabela de erros abaixo) |
 
-- Explicou os conceitos (cold start, fase de Init, estado efêmero, limite de tempo,
-  `Transform` do SAM, diferença entre `&&` e `|`, rótulos do SELinux).
-- Sugeriu os comandos e explicou cada opção antes de eu executar.
-- Diagnosticou os erros de ambiente a partir das mensagens que eu colei.
-- Redigiu as respostas da seção 4 e o texto deste README, a partir das medições que
-  **eu** executei.
+**O que a IA fez:** explicou os conceitos (cold start, fase de Init, estado efêmero,
+limite de tempo, `Transform` do SAM, diferença entre `&&` e `|`, rótulos do SELinux);
+sugeriu os comandos explicando cada opção antes da execução; diagnosticou os erros a
+partir das mensagens que colei; e redigiu as respostas da seção 4 a partir das
+medições que eu coletei.
 
-**O que eu fiz:**
+**O que eu fiz:** executei todos os comandos e coletei as saídas e os tempos; decidi
+o caminho (A, local), o provedor (AWS) e o fluxo do sistema (guia de transporte);
+escrevi o `template.yaml` e o `app.py` com orientação; e revisei as respostas antes
+de entregar.
 
-- Executei todos os comandos nesta máquina e coletei as saídas e os tempos.
-- Decidi o caminho (A, local), o provedor (AWS) e o fluxo do sistema (guia de
-  transporte).
-- Escrevi o `template.yaml` e o `app.py`, com orientação.
-- Revisei as respostas antes de entregar.
+**O que a IA errou e foi corrigido pela execução:**
 
-**O que a IA errou e foi corrigido com evidência:**
-
-Registro isto porque faz parte de usar IA com responsabilidade — as respostas dela
-não foram aceitas sem verificação:
+Registro isto porque é como validei o que recebi — nenhuma afirmação foi aceita sem
+teste:
 
 | Afirmação da IA | O que a execução mostrou |
 |---|---|
 | "você não precisa do Python 3.12 no host" | `sam build` falhou exigindo exatamente a versão do runtime |
 | "aponte a modeline para o schema do SAM e terá autocomplete" | o schema tem ~18 MB; a extensão falha em silêncio e nenhuma sugestão aparece |
 | "o `requirements.txt` está vazio, nada será baixado" | o template `hello-world` traz `requests`; o pacote ficou com 4,4 MB |
-| sequência de comandos `mv` / `rm -rf` em linhas separadas | o `mv` falhou e o `rm -rf` apagou o projeto; faltava proteger com `&&` |
+| sequência `mv` / `rm -rf` em linhas separadas | o `mv` falhou e o `rm -rf` apagou o projeto; faltava proteger com `&&` |
 
 O último caso custou o projeto inteiro e exigiu refazer o `sam init`. A lição ficou:
 **comando destrutivo nunca deve ser encadeado sem `&&` protegendo o passo anterior.**
@@ -480,8 +513,18 @@ O último caso custou o projeto inteiro e exigiu refazer o `sam init`. A lição
 
 ## 7. Evidências
 
-As capturas estão em [`evidencias/`](evidencias/).
+Saídas de terminal de todas as etapas, com data e hora:
+**[`evidencias/saidas-terminal.md`](evidencias/saidas-terminal.md)**
 
-| # | Arquivo | Mostra |
-|---|---|---|
-| | | |
+| Seção | Conteúdo |
+|---|---|
+| 1 | Ambiente: `date`, `sam --version`, `docker --version`, `python3.12 --version` |
+| 2 | `sam validate` e `sam build` com `Build Succeeded`; rótulo SELinux do código |
+| 3 | Invocação por evento: guia emitida, `REPORT`, e 3 medições de cold start com `time` |
+| 4 | Gatilho HTTP: `start-api` no ar e 4 chamadas `curl` com o contador 1→4 |
+| 5 | Estouro do limite de tempo: `Duration: 3000.00 ms` e `errResetReceived` |
+| 6 | Os 6 erros de ambiente encontrados, com a mensagem original de cada um |
+
+Capturas de tela do `curl` recebendo POST e do estouro de timeout foram registradas
+em nota separada (Obsidian).
+
