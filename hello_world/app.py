@@ -1,42 +1,37 @@
+import base64
 import json
+import time
 
-# import requests
-
+contador = 0  # roda uma vez, na criação do ambiente
 
 def lambda_handler(event, context):
-    """Sample pure Lambda function
+    global contador
+    contador += 1
 
-    Parameters
-    ----------
-    event: dict, required
-        API Gateway Lambda Proxy Input Format
+    # O corpo chega como STRING. Em algumas situações o API Gateway o envia
+    # codificado em Base64 (conteúdo binário, e também o padrão do
+    # 'sam local generate-event' nas versões recentes). O próprio evento diz
+    # qual é o caso, no campo isBase64Encoded.
+    corpo = event.get("body") or "{}"
+    if event.get("isBase64Encoded"):
+        corpo = base64.b64decode(corpo).decode()
 
-        Event doc: https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html#api-gateway-simple-proxy-for-lambda-input-format
+    pedido = json.loads(corpo)
 
-    context: object, required
-        Lambda Context runtime methods and attributes
+    if "requisicaoId" not in pedido:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"erro": "requisicaoId obrigatório"}),
+        }
 
-        Context doc: https://docs.aws.amazon.com/lambda/latest/dg/python-context-object.html
+    if pedido.get("demorar"):
+        time.sleep(5)   # estoura o Timeout de 3s de propósito
 
-    Returns
-    ------
-    API Gateway Lambda Proxy Output Format: dict
-
-        Return doc: https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html
-    """
-
-    # try:
-    #     ip = requests.get("http://checkip.amazonaws.com/")
-    # except requests.RequestException as e:
-    #     # Send some context about this error to Lambda Logs
-    #     print(e)
-
-    #     raise e
-
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "message": "hello world",
-            # "location": ip.text.replace("\n", "")
-        }),
+    guia = {
+        "guia": "G-" + pedido["requisicaoId"],
+        "hospital": pedido.get("hospital"),
+        "bolsas": pedido.get("bolsas", []),
+        "invocacaoNesteAmbiente": contador,
     }
+
+    return {"statusCode": 201, "body": json.dumps(guia)}

@@ -1,130 +1,293 @@
-# sam-app
+# Atividade individual 1 — Serverless
 
-This project contains source code and supporting files for a serverless application that you can deploy with the SAM CLI. It includes the following files and folders.
+Função serverless que emite a **guia de transporte** de uma requisição de bolsas de
+sangue do projeto Rota Vital, executada localmente com **AWS SAM CLI**.
 
-- hello_world - Code for the application's Lambda function.
-- events - Invocation events that you can use to invoke the function.
-- tests - Unit tests for the application code. 
-- template.yaml - A template that defines the application's AWS resources.
+- **Disciplina:** Infraestrutura de Software — ADS · CESAR School · 2026.2
+- **Caminho escolhido:** A (execução local com `sam local`, sem conta AWS)
 
-The application uses several AWS resources, including Lambda functions and an API Gateway API. These resources are defined in the `template.yaml` file in this project. You can update the template to add AWS resources through the same deployment process that updates your application code.
+---
 
-If you prefer to use an integrated development environment (IDE) to build and test your application, you can use the AWS Toolkit.  
-The AWS Toolkit is an open source plug-in for popular IDEs that uses the SAM CLI to build and deploy serverless applications on AWS. The AWS Toolkit also adds a simplified step-through debugging experience for Lambda function code. See the following links to get started.
+## 1. O que é esta função
 
-* [CLion](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [GoLand](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [IntelliJ](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [WebStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [Rider](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PhpStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PyCharm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [RubyMine](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [DataGrip](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [VS Code](https://docs.aws.amazon.com/toolkit-for-vscode/latest/userguide/welcome.html)
-* [Visual Studio](https://docs.aws.amazon.com/toolkit-for-visual-studio/latest/user-guide/welcome.html)
+`POST /guias` recebe um pedido e devolve a guia emitida.
 
-## Deploy the sample application
+**Entrada:**
 
-The Serverless Application Model Command Line Interface (SAM CLI) is an extension of the AWS CLI that adds functionality for building and testing Lambda applications. It uses Docker to run your functions in an Amazon Linux environment that matches Lambda. It can also emulate your application's build environment and API.
+```json
+{
+  "requisicaoId": "R-001",
+  "hospital": "H-Recife",
+  "bolsas": ["O-NEG-0142"]
+}
+```
 
-To use the SAM CLI, you need the following tools.
+**Saída (201 Created):**
 
-* SAM CLI - [Install the SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html)
-* [Python 3 installed](https://www.python.org/downloads/)
-* Docker - [Install Docker community edition](https://hub.docker.com/search/?type=edition&offering=community)
+```json
+{
+  "guia": "G-R-001",
+  "hospital": "H-Recife",
+  "bolsas": ["O-NEG-0142"],
+  "invocacaoNesteAmbiente": 1
+}
+```
 
-To build and deploy your application for the first time, run the following in your shell:
+Campos de controle:
+
+| Campo | Para que serve |
+|---|---|
+| `requisicaoId` | obrigatório; sem ele a função devolve **400** |
+| `demorar` | se `true`, a função dorme 5 s para estourar o `Timeout` de 3 s |
+| `invocacaoNesteAmbiente` | quantas vezes **este** ambiente de execução já atendeu — revela reaproveitamento |
+
+---
+
+## 2. Como rodar
+
+### Pré-requisitos
+
+| Requisito | Verificação |
+|---|---|
+| Docker em execução | `docker info` |
+| AWS SAM CLI | `sam --version` |
+| Python 3.12 **com pip** | `python3.12 -m pip --version` |
+
+### Preparar o ambiente (Fedora)
 
 ```bash
-sam build --use-container
-sam deploy --guided
+# SAM CLI, sem sudo, na pasta do usuário
+curl -sSL -o sam.zip "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip"
+unzip -q sam.zip -d sam-installation
+./sam-installation/install --install-dir "$HOME/.local/aws-sam-cli" --bin-dir "$HOME/.local/bin"
+
+# Python 3.12 e o pip dele (o Fedora não empacota python3.12-pip)
+sudo dnf install python3.12
+python3.12 -m ensurepip --user --upgrade
 ```
 
-The first command will build the source of your application. The second command will package and deploy your application to AWS, with a series of prompts:
-
-* **Stack Name**: The name of the stack to deploy to CloudFormation. This should be unique to your account and region, and a good starting point would be something matching your project name.
-* **AWS Region**: The AWS region you want to deploy your app to.
-* **Confirm changes before deploy**: If set to yes, any change sets will be shown to you before execution for manual review. If set to no, the AWS SAM CLI will automatically deploy application changes.
-* **Allow SAM CLI IAM role creation**: Many AWS SAM templates, including this example, create AWS IAM roles required for the AWS Lambda function(s) included to access AWS services. By default, these are scoped down to minimum required permissions. To deploy an AWS CloudFormation stack which creates or modifies IAM roles, the `CAPABILITY_IAM` value for `capabilities` must be provided. If permission isn't provided through this prompt, to deploy this example you must explicitly pass `--capabilities CAPABILITY_IAM` to the `sam deploy` command.
-* **Save arguments to samconfig.toml**: If set to yes, your choices will be saved to a configuration file inside the project, so that in the future you can just re-run `sam deploy` without parameters to deploy changes to your application.
-
-You can find your API Gateway Endpoint URL in the output values displayed after deployment.
-
-## Use the SAM CLI to build and test locally
-
-Build your application with the `sam build --use-container` command.
+### Construir e invocar por evento
 
 ```bash
-sam-app$ sam build --use-container
+sam build
+chcon -Rt container_file_t .aws-sam/        # necessário no Fedora (SELinux) — ver 5.2
+sam local invoke -e events/pedido.json
 ```
 
-The SAM CLI installs dependencies defined in `hello_world/requirements.txt`, creates a deployment package, and saves it in the `.aws-sam/build` folder.
-
-Test a single function by invoking it directly with a test event. An event is a JSON document that represents the input that the function receives from the event source. Test events are included in the `events` folder in this project.
-
-Run functions locally and invoke them with the `sam local invoke` command.
+### Acionar por HTTP
 
 ```bash
-sam-app$ sam local invoke HelloWorldFunction --event events/event.json
+# terminal 1 — sobe o API Gateway emulado
+sam local start-api --port 3001
+
+# terminal 2 — chama a função
+curl -s -X POST http://localhost:3001/guias \
+  -H 'Content-Type: application/json' \
+  -d '{"requisicaoId":"R-002","hospital":"H-Recife","bolsas":["A-POS-0987"]}'
 ```
 
-The SAM CLI can also emulate your application's API. Use the `sam local start-api` to run the API locally on port 3000.
+> A porta 3000 (padrão do SAM) estava ocupada por outro serviço nesta máquina;
+> daí o `--port 3001`.
+
+### Experimentos
 
 ```bash
-sam-app$ sam local start-api
-sam-app$ curl http://localhost:3000/
+# ambiente reaproveitado entre chamadas
+sam local start-api --port 3001 --warm-containers LAZY
+
+# estourar o limite de tempo (Timeout: 3 s contra time.sleep(5))
+curl -s -X POST http://localhost:3001/guias \
+  -H 'Content-Type: application/json' \
+  -d '{"requisicaoId":"R-003","demorar":true}'
 ```
 
-The SAM CLI reads the application template to determine the API's routes and the functions that they invoke. The `Events` property on each function's definition includes the route and method for each path.
+---
 
-```yaml
-      Events:
-        HelloWorld:
-          Type: Api
-          Properties:
-            Path: /hello
-            Method: get
+## 3. Medições obtidas
+
+Todas as medições feitas nesta máquina (Fedora 45, Docker 29.9.3, SAM CLI 1.174.1),
+em 26/11/2026.
+
+### 3.1 Invocação por evento (`sam local invoke`)
+
+Cada `invoke` **cria e destrói** um ambiente. O contador volta a `1` sempre.
+
+| Execução | `real` (parede) | `Duration` | `Init Duration` | `invocacaoNesteAmbiente` |
+|---|---|---|---|---|
+| 1ª | — | 33,55 ms | 0,02 ms | 1 |
+| 2ª | — | 37,04 ms | 0,02 ms | 1 |
+| 3ª (medida com `time`) | **8,019 s** | 32,57 ms | 0,03 ms | 1 |
+
+O contraste entre **8,019 s de tempo real** e **32,57 ms de execução** é o custo de
+preparar o ambiente: 99,6% do tempo não foi o código da função.
+
+### 3.2 Gatilho HTTP (`sam local start-api --port 3001`)
+
+Quatro chamadas `curl` seguidas, sem reiniciar o servidor:
+
+| Chamada | `Duration` | `Init Duration` | `invocacaoNesteAmbiente` |
+|---|---|---|---|
+| 1ª | 31,10 ms | 0,06 ms | 1 |
+| 2ª | 1,19 ms | *campo ausente* | 2 |
+| 3ª | 0,80 ms | *campo ausente* | 3 |
+| 4ª | 0,79 ms | *campo ausente* | 4 |
+
+Dois achados:
+
+1. **O campo `Init Duration` desaparece** a partir da 2ª chamada. Não é omissão do
+   relatório: sem ambiente novo, não há fase Init para medir. A ausência do campo é
+   a evidência do reaproveitamento.
+2. **O `start-api` reaproveita o ambiente sem a flag `--warm-containers`.** Ao subir,
+   ele já imprime `Initializing the lambda functions containers` e pré-cria o
+   contêiner. O contador cresceu de 1 a 4 sem nenhuma configuração extra — o
+   comportamento do SAM CLI 1.174.1 difere do que o roteiro assumia.
+
+Ganho do ambiente aquecido: **31,10 ms → 0,79 ms, cerca de 39× mais rápido**, apenas
+por não repetir o Init.
+
+### 3.3 Estouro do limite de tempo
+
+<!-- PREENCHER com o resultado do curl com "demorar": true -->
+
+---
+
+## 4. Respostas
+
+<!-- ESCREVER COM AS PRÓPRIAS PALAVRAS, apoiando-se nos números da seção 3 -->
+
+### 4.1 Por que a primeira invocação demorou mais? O que acontece na fase de Init?
+
+### 4.2 O que o `invocacaoNesteAmbiente` mostrou com e sem `--warm-containers`? O que isso diz sobre guardar estado em variável global?
+
+### 4.3 O que aconteceu com `demorar=true`? Qual o tempo máximo de uma execução no Lambda? O que fazer quando o trabalho é mais longo?
+
+### 4.4 Conta de custo
+
+Premissas: 1.000.000 de execuções/mês, 128 MB de memória, 100 ms por execução,
+US$ 0,20 por milhão de requisições e US$ 0,0000166667 por GB-segundo.
+
+```
+requisições : 1.000.000 ÷ 1.000.000 × US$ 0,20       = US$ 0,2000
+computação  : 1.000.000 × 0,1 s × 0,125 GB           = 12.500 GB-s
+              12.500 GB-s × US$ 0,0000166667         = US$ 0,2083
+                                                       -----------
+total                                                  US$ 0,4083
 ```
 
-## Add a resource to your application
-The application template uses AWS Serverless Application Model (AWS SAM) to define application resources. AWS SAM is an extension of AWS CloudFormation with a simpler syntax for configuring common serverless application resources such as functions, triggers, and APIs. For resources not included in [the SAM specification](https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md), you can use standard [AWS CloudFormation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html) resource types.
+<!-- conferir a conta e comentar: o resultado é alto ou baixo? o que isso sugere? -->
 
-## Fetch, tail, and filter Lambda function logs
+### 4.5 Onde no Rota Vital uma função assim faria sentido, e onde não faria?
 
-To simplify troubleshooting, SAM CLI has a command called `sam logs`. `sam logs` lets you fetch logs generated by your deployed Lambda function from the command line. In addition to printing the logs on the terminal, this command has several nifty features to help you quickly find the bug.
+---
 
-`NOTE`: This command works for all AWS Lambda functions; not just the ones you deploy using SAM.
+## 5. Dificuldades encontradas
+
+### 5.1 `sam build` não encontrava o Python 3.12
+
+O `sam build` instala as dependências usando o Python **do host**, e exige a mesma
+versão declarada em `Runtime:`. A máquina tinha apenas Python 3.14.
+
+Agravante: **o Fedora não empacota `python3.12-pip`** — existem `devel`, `debug`,
+`idle`, `libs` e `test`, mas não o pip. A solução foi instalar o interpretador pelo
+`dnf` e o pip pela própria biblioteca padrão do Python:
 
 ```bash
-sam-app$ sam logs -n HelloWorldFunction --stack-name "sam-app" --tail
+sudo dnf install python3.12
+python3.12 -m ensurepip --user --upgrade
 ```
 
-You can find more information and examples about filtering Lambda function logs in the [SAM CLI Documentation](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-logging.html).
+O `--user` instala em `~/.local`, sem precisar de root.
 
-## Tests
+### 5.2 SELinux bloqueava a leitura do código montado no contêiner
 
-Tests are defined in the `tests` folder in this project. Use PIP to install the test dependencies and run tests.
+Sintoma: `Runtime.ImportModuleError: Unable to import module 'app': No module named 'app'`
+— apesar de o arquivo existir, com permissão `rw-r--r--`.
+
+A causa não era permissão POSIX, e sim o **rótulo SELinux**. Arquivos da pasta do
+usuário nascem como `user_home_t`, que contêineres não têm permissão para ler:
+
+```
+$ ls -lZ .aws-sam/build/HelloWorldFunction/app.py
+-rw-r--r--. 1 linho linho unconfined_u:object_r:user_home_t:s0 725 app.py
+
+$ docker run --rm -v "$PWD/.aws-sam/build/HelloWorldFunction:/var/task:ro" \
+    alpine:3 head -2 /var/task/app.py
+head: /var/task/app.py: Permission denied
+```
+
+O teste com o `alpine` isolou a camada: se um contêiner qualquer não lê o arquivo,
+o problema não está no SAM. Correção:
 
 ```bash
-sam-app$ pip install -r tests/requirements.txt --user
-# unit test
-sam-app$ python -m pytest tests/unit -v
-# integration test, requiring deploying the stack first.
-# Create the env variable AWS_SAM_STACK_NAME with the name of the stack we are testing
-sam-app$ AWS_SAM_STACK_NAME="sam-app" python -m pytest tests/integration -v
+chcon -Rt container_file_t .aws-sam/
 ```
 
-## Cleanup
+O rótulo **se perde a cada `sam build`** que recria a pasta, então o comando faz
+parte do ciclo de desenvolvimento, não é correção definitiva. Ubuntu e Debian usam
+AppArmor, mais permissivo por padrão — por isso a maioria dos tutoriais não
+menciona esse obstáculo.
 
-To delete the sample application that you created, use the AWS CLI. Assuming you used your project name for the stack name, you can run the following:
+### 5.3 O corpo do evento vinha em Base64
+
+`sam local generate-event ... --body '<json>'` gerou o corpo **codificado em
+Base64**, com `isBase64Encoded: true`. Código que faz `json.loads(event["body"])`
+direto quebra com:
+
+```
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+Optei por tratar no **código**, não por editar o arquivo de evento — o API Gateway
+real envia Base64 para conteúdo binário e texto puro para `application/json`, e o
+próprio evento informa qual é o caso:
+
+```python
+corpo = event.get("body") or "{}"
+if event.get("isBase64Encoded"):
+    corpo = base64.b64decode(corpo).decode()
+pedido = json.loads(corpo)
+```
+
+Corrigir o evento adaptaria o teste ao código; corrigir o código aceita os dois
+formatos e continua funcionando com `curl`, com `start-api` e na nuvem.
+
+### 5.4 O `Init Duration` do emulador local não mede cold start
+
+O `REPORT` local reportou `Init Duration: 0,02 ms` mesmo em invocações que
+**recriaram** o ambiente — comprovado por `invocacaoNesteAmbiente` voltar a `1`. O
+emulador começa a contar depois que o runtime já está de pé, então o tempo de criar
+o contêiner e importar o módulo não entra nesse campo.
+
+Para medir o custo real usei o tempo de parede do comando inteiro:
 
 ```bash
-sam delete --stack-name "sam-app"
+time sam local invoke -e events/pedido.json
 ```
 
-## Resources
+### 5.5 "Missing Authentication Token" ao abrir a URL no navegador
 
-See the [AWS SAM developer guide](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html) for an introduction to SAM specification, the SAM CLI, and serverless application concepts.
+Mensagem enganosa do API Gateway: não tem relação com autenticação. O navegador faz
+`GET` e a rota aceita apenas `POST`; quando o método (ou o caminho) não casa, a
+resposta é `403` com esse texto.
 
-Next, you can use AWS Serverless Application Repository to deploy ready to use Apps that go beyond hello world samples and learn how authors developed their applications: [AWS Serverless Application Repository main page](https://aws.amazon.com/serverless/serverlessrepo/)
+### 5.6 Porta 3000 ocupada
+
+O padrão do `sam local start-api` é a porta 3000, já em uso por outro serviço nesta
+máquina. Resolvido com `--port 3001`.
+
+---
+
+## 6. Uso de IA
+
+<!-- declarar honestamente: o que foi perguntado, o que foi aceito, e o que foi
+     verificado ou rejeitado -->
+
+---
+
+## 7. Evidências
+
+As capturas estão em [`evidencias/`](evidencias/).
+
+| # | Arquivo | Mostra |
+|---|---|---|
+| | | |
