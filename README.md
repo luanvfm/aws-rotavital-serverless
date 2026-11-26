@@ -1,130 +1,530 @@
-# sam-app
+# Atividade individual 1 — Serverless
 
-This project contains source code and supporting files for a serverless application that you can deploy with the SAM CLI. It includes the following files and folders.
+Função serverless que emite a **guia de transporte** de uma requisição de bolsas de
+sangue do projeto Rota Vital, executada localmente com **AWS SAM CLI**.
 
-- hello_world - Code for the application's Lambda function.
-- events - Invocation events that you can use to invoke the function.
-- tests - Unit tests for the application code. 
-- template.yaml - A template that defines the application's AWS resources.
+- **Disciplina:** Infraestrutura de Software — ADS · CESAR School · 2026.2
+- **Caminho escolhido:** A (execução local com `sam local`, sem conta AWS)
 
-The application uses several AWS resources, including Lambda functions and an API Gateway API. These resources are defined in the `template.yaml` file in this project. You can update the template to add AWS resources through the same deployment process that updates your application code.
+---
 
-If you prefer to use an integrated development environment (IDE) to build and test your application, you can use the AWS Toolkit.  
-The AWS Toolkit is an open source plug-in for popular IDEs that uses the SAM CLI to build and deploy serverless applications on AWS. The AWS Toolkit also adds a simplified step-through debugging experience for Lambda function code. See the following links to get started.
+## 1. O que é esta função
 
-* [CLion](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [GoLand](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [IntelliJ](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [WebStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [Rider](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PhpStorm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [PyCharm](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [RubyMine](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [DataGrip](https://docs.aws.amazon.com/toolkit-for-jetbrains/latest/userguide/welcome.html)
-* [VS Code](https://docs.aws.amazon.com/toolkit-for-vscode/latest/userguide/welcome.html)
-* [Visual Studio](https://docs.aws.amazon.com/toolkit-for-visual-studio/latest/user-guide/welcome.html)
+`POST /guias` recebe um pedido e devolve a guia emitida.
 
-## Deploy the sample application
+**Entrada:**
 
-The Serverless Application Model Command Line Interface (SAM CLI) is an extension of the AWS CLI that adds functionality for building and testing Lambda applications. It uses Docker to run your functions in an Amazon Linux environment that matches Lambda. It can also emulate your application's build environment and API.
+```json
+{
+  "requisicaoId": "R-001",
+  "hospital": "H-Recife",
+  "bolsas": ["O-NEG-0142"]
+}
+```
 
-To use the SAM CLI, you need the following tools.
+**Saída (201 Created):**
 
-* SAM CLI - [Install the SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html)
-* [Python 3 installed](https://www.python.org/downloads/)
-* Docker - [Install Docker community edition](https://hub.docker.com/search/?type=edition&offering=community)
+```json
+{
+  "guia": "G-R-001",
+  "hospital": "H-Recife",
+  "bolsas": ["O-NEG-0142"],
+  "invocacaoNesteAmbiente": 1
+}
+```
 
-To build and deploy your application for the first time, run the following in your shell:
+Campos de controle:
+
+| Campo | Para que serve |
+|---|---|
+| `requisicaoId` | obrigatório; sem ele a função devolve **400** |
+| `demorar` | se `true`, a função dorme 5 s para estourar o `Timeout` de 3 s |
+| `invocacaoNesteAmbiente` | quantas vezes **este** ambiente de execução já atendeu — revela reaproveitamento |
+
+---
+
+## 2. Como rodar
+
+### Pré-requisitos
+
+| Requisito | Verificação |
+|---|---|
+| Docker em execução | `docker info` |
+| AWS SAM CLI | `sam --version` |
+| Python 3.12 **com pip** | `python3.12 -m pip --version` |
+
+### Preparar o ambiente (Fedora)
 
 ```bash
-sam build --use-container
-sam deploy --guided
+# SAM CLI, sem sudo, na pasta do usuário
+curl -sSL -o sam.zip "https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip"
+unzip -q sam.zip -d sam-installation
+./sam-installation/install --install-dir "$HOME/.local/aws-sam-cli" --bin-dir "$HOME/.local/bin"
+
+# Python 3.12 e o pip dele (o Fedora não empacota python3.12-pip)
+sudo dnf install python3.12
+python3.12 -m ensurepip --user --upgrade
 ```
 
-The first command will build the source of your application. The second command will package and deploy your application to AWS, with a series of prompts:
-
-* **Stack Name**: The name of the stack to deploy to CloudFormation. This should be unique to your account and region, and a good starting point would be something matching your project name.
-* **AWS Region**: The AWS region you want to deploy your app to.
-* **Confirm changes before deploy**: If set to yes, any change sets will be shown to you before execution for manual review. If set to no, the AWS SAM CLI will automatically deploy application changes.
-* **Allow SAM CLI IAM role creation**: Many AWS SAM templates, including this example, create AWS IAM roles required for the AWS Lambda function(s) included to access AWS services. By default, these are scoped down to minimum required permissions. To deploy an AWS CloudFormation stack which creates or modifies IAM roles, the `CAPABILITY_IAM` value for `capabilities` must be provided. If permission isn't provided through this prompt, to deploy this example you must explicitly pass `--capabilities CAPABILITY_IAM` to the `sam deploy` command.
-* **Save arguments to samconfig.toml**: If set to yes, your choices will be saved to a configuration file inside the project, so that in the future you can just re-run `sam deploy` without parameters to deploy changes to your application.
-
-You can find your API Gateway Endpoint URL in the output values displayed after deployment.
-
-## Use the SAM CLI to build and test locally
-
-Build your application with the `sam build --use-container` command.
+### Construir e invocar por evento
 
 ```bash
-sam-app$ sam build --use-container
+sam build
+chcon -Rt container_file_t .aws-sam/        # necessário no Fedora (SELinux) — ver 5.2
+sam local invoke -e events/pedido.json
 ```
 
-The SAM CLI installs dependencies defined in `hello_world/requirements.txt`, creates a deployment package, and saves it in the `.aws-sam/build` folder.
-
-Test a single function by invoking it directly with a test event. An event is a JSON document that represents the input that the function receives from the event source. Test events are included in the `events` folder in this project.
-
-Run functions locally and invoke them with the `sam local invoke` command.
+### Acionar por HTTP
 
 ```bash
-sam-app$ sam local invoke HelloWorldFunction --event events/event.json
+# terminal 1 — sobe o API Gateway emulado
+sam local start-api --port 3001
+
+# terminal 2 — chama a função
+curl -s -X POST http://localhost:3001/guias \
+  -H 'Content-Type: application/json' \
+  -d '{"requisicaoId":"R-002","hospital":"H-Recife","bolsas":["A-POS-0987"]}'
 ```
 
-The SAM CLI can also emulate your application's API. Use the `sam local start-api` to run the API locally on port 3000.
+> A porta 3000 (padrão do SAM) estava ocupada por outro serviço nesta máquina;
+> daí o `--port 3001`.
+
+### Experimentos
 
 ```bash
-sam-app$ sam local start-api
-sam-app$ curl http://localhost:3000/
+# ambiente reaproveitado entre chamadas
+sam local start-api --port 3001 --warm-containers LAZY
+
+# estourar o limite de tempo (Timeout: 3 s contra time.sleep(5))
+curl -s -X POST http://localhost:3001/guias \
+  -H 'Content-Type: application/json' \
+  -d '{"requisicaoId":"R-003","demorar":true}'
 ```
 
-The SAM CLI reads the application template to determine the API's routes and the functions that they invoke. The `Events` property on each function's definition includes the route and method for each path.
+---
 
-```yaml
-      Events:
-        HelloWorld:
-          Type: Api
-          Properties:
-            Path: /hello
-            Method: get
+## 3. Medições obtidas
+
+Todas as medições feitas nesta máquina (Fedora 45, Docker 29.9.3, SAM CLI 1.174.1),
+em 26/11/2026.
+
+### 3.1 Invocação por evento (`sam local invoke`)
+
+Cada `invoke` **cria e destrói** um ambiente. O contador volta a `1` sempre.
+
+| Execução | `real` (parede) | `Duration` | `Init Duration` | `invocacaoNesteAmbiente` |
+|---|---|---|---|---|
+| 1ª | — | 33,55 ms | 0,02 ms | 1 |
+| 2ª | — | 37,04 ms | 0,02 ms | 1 |
+| 3ª (medida com `time`) | **8,019 s** | 32,57 ms | 0,03 ms | 1 |
+
+O contraste entre **8,019 s de tempo real** e **32,57 ms de execução** é o custo de
+preparar o ambiente: 99,6% do tempo não foi o código da função.
+
+### 3.2 Gatilho HTTP (`sam local start-api --port 3001`)
+
+Quatro chamadas `curl` seguidas, sem reiniciar o servidor:
+
+| Chamada | `Duration` | `Init Duration` | `invocacaoNesteAmbiente` |
+|---|---|---|---|
+| 1ª | 31,10 ms | 0,06 ms | 1 |
+| 2ª | 1,19 ms | *campo ausente* | 2 |
+| 3ª | 0,80 ms | *campo ausente* | 3 |
+| 4ª | 0,79 ms | *campo ausente* | 4 |
+
+Dois achados:
+
+1. **O campo `Init Duration` desaparece** a partir da 2ª chamada. Não é omissão do
+   relatório: sem ambiente novo, não há fase Init para medir. A ausência do campo é
+   a evidência do reaproveitamento.
+2. **O `start-api` reaproveita o ambiente sem a flag `--warm-containers`.** Ao subir,
+   ele já imprime `Initializing the lambda functions containers` e pré-cria o
+   contêiner. O contador cresceu de 1 a 4 sem nenhuma configuração extra — o
+   comportamento do SAM CLI 1.174.1 difere do que o roteiro assumia.
+
+Ganho do ambiente aquecido: **31,10 ms → 0,79 ms, cerca de 39× mais rápido**, apenas
+por não repetir o Init.
+
+### 3.3 Estouro do limite de tempo
+
+Chamada com `{"requisicaoId": "R-003", "demorar": true}`, que faz a função dormir
+5 s contra um `Timeout` de 3 s declarado no `template.yaml`.
+
+**Resposta HTTP recebida:**
+
+```json
+{"message": "Internal server error"}
 ```
 
-## Add a resource to your application
-The application template uses AWS Serverless Application Model (AWS SAM) to define application resources. AWS SAM is an extension of AWS CloudFormation with a simpler syntax for configuring common serverless application resources such as functions, triggers, and APIs. For resources not included in [the SAM specification](https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md), you can use standard [AWS CloudFormation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html) resource types.
+**Log do contêiner do runtime:**
 
-## Fetch, tail, and filter Lambda function logs
+```
+[ERROR] (rapid) Invoke failed InvokeID=7f520c35-... error=errResetReceived
+REPORT RequestId: 7f520c35-...  Duration: 3000.00 ms  Billed Duration: 3000 ms  Memory Size: 128 MB
+```
 
-To simplify troubleshooting, SAM CLI has a command called `sam logs`. `sam logs` lets you fetch logs generated by your deployed Lambda function from the command line. In addition to printing the logs on the terminal, this command has several nifty features to help you quickly find the bug.
+| Observação | Valor |
+|---|---|
+| `Duration` | **3000,00 ms exatos** — o ambiente cortou no milissegundo do limite |
+| `Billed Duration` | **3000 ms** — o tempo gasto até o corte **é cobrado** |
+| Erro do runtime | `errResetReceived` (o processo foi reiniciado de fora) |
+| Resposta ao cliente | `500 Internal server error` |
 
-`NOTE`: This command works for all AWS Lambda functions; not just the ones you deploy using SAM.
+O `time.sleep(5)` **nunca terminou**. A execução não falhou por um erro do código:
+foi interrompida pelo ambiente aplicando um limite declarado na infraestrutura.
+
+### 3.4 Ajuste do limite de tempo (`Timeout: 3` → `Timeout: 10`)
+
+Alterado o `Timeout` em `Globals: Function:` para 10 s, seguido de `sam build`, e a
+**mesma** requisição foi repetida:
+
+| | `Timeout: 3` | `Timeout: 10` |
+|---|---|---|
+| `Duration` | 3000,00 ms | **5032,41 ms** |
+| `Billed Duration` | 3000 ms | 5033 ms |
+| Erro do runtime | `errResetReceived` | — |
+| Resposta | `500 Internal server error` | **`201` com a guia emitida** |
+| Tempo de parede | 10,96 s | 12,70 s |
+
+Saída da execução bem-sucedida:
+
+```json
+{"statusCode": 201, "body": "{\"guia\": \"G-R-003\", \"hospital\": null, \"bolsas\": [], \"invocacaoNesteAmbiente\": 1}"}
+```
+
+Os `5032,41 ms` são os 5 segundos do `time.sleep(5)` mais a execução do resto do
+handler — a função rodou até o fim porque agora cabia dentro do limite.
+
+Note que `hospital` veio `null` e `bolsas` vazio: o evento deste teste só traz
+`requisicaoId` e `demorar`, e o código usa `.get()` com padrão em vez de acesso
+direto, então campos ausentes não quebram a função.
+
+> **Importante:** o `Timeout` ficou em **10 s** no repositório. Para reproduzir o
+> erro da seção 3.3, baixe para `3` e rode `sam build` novamente.
+
+---
+
+## 4. Respostas
+
+> As respostas abaixo foram redigidas com apoio de IA a partir das medições que eu
+> executei nesta máquina (seção 3). Ver a seção 6, "Uso de IA".
+
+### 4.1 Por que a primeira invocação demorou mais? O que acontece na fase de Init?
+
+Porque na primeira chamada não existe ambiente de execução — ele precisa ser criado
+antes de o código poder rodar. Isso é o **cold start**.
+
+Na fase de Init acontecem, em ordem: a plataforma aloca um ambiente isolado, baixa e
+descompacta o pacote da função, inicia o runtime Python, importa o `app.py` e executa
+o **código de topo do arquivo** — no meu caso a linha `contador = 0`. Só depois disso
+o `lambda_handler` é chamado. Nas chamadas seguintes, se o ambiente ainda estiver
+vivo, todos esses passos são pulados e só o handler executa.
+
+As duas medições que comprovam isso:
+
+| Comparação | Valor |
+|---|---|
+| `invoke`: tempo total de parede vs. execução | **8,019 s** contra **32,57 ms** |
+| `curl`: 1ª chamada vs. 4ª chamada | **31,10 ms** contra **0,79 ms** |
+
+No primeiro caso, 99,6% do tempo não foi o meu código: foi preparar o ambiente. No
+segundo, a mesma função ficou **39× mais rápida** apenas por não repetir o Init.
+
+Há uma ressalva honesta: o campo `Init Duration` do emulador local marcou 0,02 ms
+mesmo quando o ambiente foi recriado (ver 5.4), então ele não serve para medir cold
+start localmente — precisei usar `time` para pegar o tempo de parede. Na AWS real o
+cold start de uma função Python pequena fica tipicamente entre 200 e 800 ms.
+
+Duas coisas aumentam o cold start: **tamanho do pacote** e **trabalho no código de
+topo**. Meu pacote tem 4,4 MB por causa da biblioteca `requests`, que vem no template
+`hello-world` e a minha função nem usa — é download e descompactação desperdiçados em
+todo cold start.
+
+### 4.2 O que o `invocacaoNesteAmbiente` mostrou com e sem `--warm-containers`? O que isso diz sobre guardar estado em variável global?
+
+| Forma de execução | O que o contador devolveu |
+|---|---|
+| `sam local invoke` (3 execuções) | **1, 1, 1** |
+| `sam local start-api` (4 chamadas) | **1, 2, 3, 4** |
+
+Com `sam local invoke`, cada execução cria e destrói o ambiente, então a variável
+global nasce zerada toda vez e o contador nunca passa de 1. Com `start-api`, o
+contêiner é reaproveitado entre as chamadas e o contador cresce.
+
+Um achado não previsto no roteiro: **o `start-api` já reaproveita o ambiente sem a
+flag `--warm-containers`**. Ao subir, ele imprime `Initializing the lambda functions
+containers` e pré-cria o contêiner. Confirmei pelo contador crescendo de 1 a 4 e pelo
+**desaparecimento do campo `Init Duration`** a partir da segunda chamada — sem
+ambiente novo, não há fase Init para relatar.
+
+Sobre guardar estado em variável global: **não se pode confiar nele.** O
+reaproveitamento é uma otimização da plataforma, não uma garantia contratual. Três
+razões concretas:
+
+1. O próximo ambiente começa zerado — e eu não controlo quando um é descartado.
+2. Invocações simultâneas rodam em ambientes **diferentes**, que não compartilham
+   memória. Dez chamadas paralelas podem ter dez contadores independentes.
+3. O valor é imprevisível: a mesma função devolveu 1 por um caminho e 4 por outro.
+
+O uso legítimo é **cache descartável**: uma conexão de banco, um cliente HTTP, uma
+configuração lida uma vez. Coisas em que perder o valor significa apenas refazer o
+trabalho, não perder informação. Estado de negócio — contagem, saldo, carrinho —
+precisa de armazenamento externo (banco, Redis, DynamoDB).
+
+Vindo de Java, o paralelo mais próximo é o `static`: ele vive enquanto a JVM estiver
+carregada, como a variável de módulo vive enquanto o ambiente de execução existir. Em
+ambos os casos se aposta na longevidade de um processo que não se controla — mas no
+Lambda esse processo é descartado de propósito, com frequência.
+
+### 4.3 O que aconteceu com `demorar=true`? Qual o tempo máximo de uma execução no Lambda? O que fazer quando o trabalho é mais longo?
+
+A função foi **interrompida pelo ambiente**, não pelo próprio código. O
+`time.sleep(5)` nunca terminou: o `template.yaml` declara `Timeout: 3`, e o log do
+runtime registrou `Duration: 3000.00 ms` — exatamente o limite — com
+`error=errResetReceived`. O cliente recebeu `500 Internal server error`.
+
+O detalhe que mais chama atenção é o **`Billed Duration: 3000 ms`**: paga-se pelos 3
+segundos consumidos até o corte, mesmo sem receber resultado algum. Timeout mal
+dimensionado gera custo sem entregar valor.
+
+O tempo máximo de uma execução no AWS Lambda é de **15 minutos** (900 segundos). O
+padrão do SAM é 3 segundos, e é uma escolha deliberada: um limite baixo faz a falha
+aparecer rápido em vez de a função ficar pendurada consumindo tempo cobrado.
+
+Ao elevar o `Timeout` para 10 s e refazer o `sam build`, a **mesma** requisição
+passou a completar: `Duration: 5032,41 ms` e resposta `201` com a guia emitida (ver
+3.4). Isso confirma que o limite é da infraestrutura, não do código — nada no
+`app.py` mudou entre as duas execuções.
+
+Quando o trabalho é mais longo que o limite, aumentar o `Timeout` só adia o problema.
+As saídas reais são:
+
+- **Quebrar em etapas menores e coordená-las** — uma fila (SQS) ou uma máquina de
+  estados (Step Functions) encadeia várias execuções curtas, cada uma dentro do
+  limite, com reprocessamento de falhas.
+- **Processar em lote em vez de por item** — uma função trata N registros por
+  invocação e marca o progresso, de modo que a próxima continue de onde parou.
+- **Usar um serviço de execução longa** — contêiner (ECS/Fargate), job em batch ou
+  um servidor tradicional. Trabalho que leva horas simplesmente não pertence a uma
+  função serverless.
+
+### 4.4 Conta de custo
+
+Premissas: 1.000.000 de execuções/mês, 128 MB de memória, 100 ms por execução,
+US$ 0,20 por milhão de requisições e US$ 0,0000166667 por GB-segundo.
+
+```
+requisições : 1.000.000 ÷ 1.000.000 × US$ 0,20        = US$ 0,2000
+
+computação  : 128 MB = 0,125 GB
+              1.000.000 × 0,1 s × 0,125 GB            = 12.500 GB-s
+              12.500 GB-s × US$ 0,0000166667          = US$ 0,2083
+                                                        -----------
+total mensal                                            US$ 0,4083
+```
+
+Menos de meio dólar por **um milhão** de execuções — algo como R$ 2,20. Para efeito
+de comparação, a menor instância EC2 ligada o mês inteiro custa alguns dólares, e
+ficaria ociosa na maior parte do tempo.
+
+Três leituras que a conta permite:
+
+1. **Para carga intermitente, serverless é dificílimo de superar em preço.** Não se
+   paga por espera, só por execução.
+2. **O custo cresce com `memória × tempo`.** Dobrar a memória dobra o preço por
+   segundo — mas, como no Lambda a CPU é proporcional à memória, uma função mais
+   "gorda" pode terminar antes e sair **mais barata**. Vale medir, não supor.
+3. **O preço não é o único critério.** Esses US$ 0,41 não contabilizam cold start,
+   limite de 15 minutos nem a dificuldade maior de depurar. Barato não é
+   automaticamente adequado.
+
+### 4.5 Onde no Rota Vital uma função assim faria sentido, e onde não faria?
+
+**Onde faria sentido** — trabalho pontual, curto, disparado por evento e tolerante a
+algumas centenas de milissegundos de latência:
+
+- **Emitir a guia de transporte**, que é exatamente esta função: recebe um pedido,
+  gera um documento, devolve. Sem estado, sem processo longo.
+- **Notificar hospitais** quando uma bolsa é alocada (e-mail, push, WhatsApp).
+  Acontece esporadicamente e não faz sentido manter servidor ligado para isso.
+- **Gerar relatórios assíncronos** de estoque, acionados por agendamento noturno.
+- **Processar arquivos enviados** — uma planilha de doações que chega e precisa ser
+  validada e importada.
+
+**Onde não faria sentido:**
+
+- **A API principal do Rota Vital.** É um sistema de emergência médica: o cold start
+  de centenas de milissegundos na primeira requisição depois de um período de
+  silêncio é um risco que não se justifica, e a aplicação recebe tráfego constante —
+  o cenário em que servidor ligado sai mais barato e mais previsível.
+- **O banco de dados.** Serverless é sem estado por definição; dados persistentes
+  precisam de um serviço feito para isso.
+- **A stack de observabilidade** (Prometheus, Grafana, Loki, Tempo). São processos
+  que precisam rodar continuamente, raspando métricas e mantendo séries temporais —
+  o oposto de execução efêmera.
+- **Qualquer operação que ultrapasse 15 minutos**, como uma migração grande ou
+  reprocessamento histórico de rotas.
+- **Caso concreto da entrega anterior:** a listagem de estoque do Rota Vital tem um
+  problema N+1 que dispara cerca de 526 consultas por requisição. Numa função
+  serverless isso seria pior que num servidor, porque não há pool de conexões
+  reaproveitado entre execuções e cada ambiente novo precisaria reconectar ao banco.
+  O defeito precisa ser corrigido antes de qualquer discussão sobre onde hospedar.
+
+A regra que extraí: serverless combina com **trabalho que acontece de vez em quando,
+termina rápido e não guarda nada**. Quanto mais o trabalho for contínuo, demorado ou
+dependente de estado, mais o modelo atrapalha.
+
+---
+
+## 5. Dificuldades encontradas
+
+### 5.1 `sam build` não encontrava o Python 3.12
+
+O `sam build` instala as dependências usando o Python **do host**, e exige a mesma
+versão declarada em `Runtime:`. A máquina tinha apenas Python 3.14.
+
+Agravante: **o Fedora não empacota `python3.12-pip`** — existem `devel`, `debug`,
+`idle`, `libs` e `test`, mas não o pip. A solução foi instalar o interpretador pelo
+`dnf` e o pip pela própria biblioteca padrão do Python:
 
 ```bash
-sam-app$ sam logs -n HelloWorldFunction --stack-name "sam-app" --tail
+sudo dnf install python3.12
+python3.12 -m ensurepip --user --upgrade
 ```
 
-You can find more information and examples about filtering Lambda function logs in the [SAM CLI Documentation](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-logging.html).
+O `--user` instala em `~/.local`, sem precisar de root.
 
-## Tests
+### 5.2 SELinux bloqueava a leitura do código montado no contêiner
 
-Tests are defined in the `tests` folder in this project. Use PIP to install the test dependencies and run tests.
+Sintoma: `Runtime.ImportModuleError: Unable to import module 'app': No module named 'app'`
+— apesar de o arquivo existir, com permissão `rw-r--r--`.
+
+A causa não era permissão POSIX, e sim o **rótulo SELinux**. Arquivos da pasta do
+usuário nascem como `user_home_t`, que contêineres não têm permissão para ler:
+
+```
+$ ls -lZ .aws-sam/build/HelloWorldFunction/app.py
+-rw-r--r--. 1 linho linho unconfined_u:object_r:user_home_t:s0 725 app.py
+
+$ docker run --rm -v "$PWD/.aws-sam/build/HelloWorldFunction:/var/task:ro" \
+    alpine:3 head -2 /var/task/app.py
+head: /var/task/app.py: Permission denied
+```
+
+O teste com o `alpine` isolou a camada: se um contêiner qualquer não lê o arquivo,
+o problema não está no SAM. Correção:
 
 ```bash
-sam-app$ pip install -r tests/requirements.txt --user
-# unit test
-sam-app$ python -m pytest tests/unit -v
-# integration test, requiring deploying the stack first.
-# Create the env variable AWS_SAM_STACK_NAME with the name of the stack we are testing
-sam-app$ AWS_SAM_STACK_NAME="sam-app" python -m pytest tests/integration -v
+chcon -Rt container_file_t .aws-sam/
 ```
 
-## Cleanup
+O rótulo **se perde a cada `sam build`** que recria a pasta, então o comando faz
+parte do ciclo de desenvolvimento, não é correção definitiva. Ubuntu e Debian usam
+AppArmor, mais permissivo por padrão — por isso a maioria dos tutoriais não
+menciona esse obstáculo.
 
-To delete the sample application that you created, use the AWS CLI. Assuming you used your project name for the stack name, you can run the following:
+### 5.3 O corpo do evento vinha em Base64
+
+`sam local generate-event ... --body '<json>'` gerou o corpo **codificado em
+Base64**, com `isBase64Encoded: true`. Código que faz `json.loads(event["body"])`
+direto quebra com:
+
+```
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+Optei por tratar no **código**, não por editar o arquivo de evento — o API Gateway
+real envia Base64 para conteúdo binário e texto puro para `application/json`, e o
+próprio evento informa qual é o caso:
+
+```python
+corpo = event.get("body") or "{}"
+if event.get("isBase64Encoded"):
+    corpo = base64.b64decode(corpo).decode()
+pedido = json.loads(corpo)
+```
+
+Corrigir o evento adaptaria o teste ao código; corrigir o código aceita os dois
+formatos e continua funcionando com `curl`, com `start-api` e na nuvem.
+
+### 5.4 O `Init Duration` do emulador local não mede cold start
+
+O `REPORT` local reportou `Init Duration: 0,02 ms` mesmo em invocações que
+**recriaram** o ambiente — comprovado por `invocacaoNesteAmbiente` voltar a `1`. O
+emulador começa a contar depois que o runtime já está de pé, então o tempo de criar
+o contêiner e importar o módulo não entra nesse campo.
+
+Para medir o custo real usei o tempo de parede do comando inteiro:
 
 ```bash
-sam delete --stack-name "sam-app"
+time sam local invoke -e events/pedido.json
 ```
 
-## Resources
+### 5.5 "Missing Authentication Token" ao abrir a URL no navegador
 
-See the [AWS SAM developer guide](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/what-is-sam.html) for an introduction to SAM specification, the SAM CLI, and serverless application concepts.
+Mensagem enganosa do API Gateway: não tem relação com autenticação. O navegador faz
+`GET` e a rota aceita apenas `POST`; quando o método (ou o caminho) não casa, a
+resposta é `403` com esse texto.
 
-Next, you can use AWS Serverless Application Repository to deploy ready to use Apps that go beyond hello world samples and learn how authors developed their applications: [AWS Serverless Application Repository main page](https://aws.amazon.com/serverless/serverlessrepo/)
+### 5.6 Porta 3000 ocupada
+
+O padrão do `sam local start-api` é a porta 3000, já em uso por outro serviço nesta
+máquina. Resolvido com `--port 3001`.
+
+---
+
+## 6. Uso de IA
+
+Declaração conforme a **PO-CESAR-021** (uso de IA permitido com declaração).
+
+| | |
+|---|---|
+| **Ferramenta** | Claude (Anthropic), via agente Hermes no terminal |
+| **Finalidade** | Explicação de conceitos, sugestão e explicação de comandos, diagnóstico de erros de ambiente e redação deste README |
+| **Como validei** | Executei todos os comandos nesta máquina e comparei o resultado real com o que a IA havia previsto; onde divergiu, corrigi o texto pela evidência (ver tabela de erros abaixo) |
+
+**O que a IA fez:** explicou os conceitos (cold start, fase de Init, estado efêmero,
+limite de tempo, `Transform` do SAM, diferença entre `&&` e `|`, rótulos do SELinux);
+sugeriu os comandos explicando cada opção antes da execução; diagnosticou os erros a
+partir das mensagens que colei; e redigiu as respostas da seção 4 a partir das
+medições que eu coletei.
+
+**O que eu fiz:** executei todos os comandos e coletei as saídas e os tempos; decidi
+o caminho (A, local), o provedor (AWS) e o fluxo do sistema (guia de transporte);
+escrevi o `template.yaml` e o `app.py` com orientação; e revisei as respostas antes
+de entregar.
+
+**O que a IA errou e foi corrigido pela execução:**
+
+Registro isto porque é como validei o que recebi — nenhuma afirmação foi aceita sem
+teste:
+
+| Afirmação da IA | O que a execução mostrou |
+|---|---|
+| "você não precisa do Python 3.12 no host" | `sam build` falhou exigindo exatamente a versão do runtime |
+| "aponte a modeline para o schema do SAM e terá autocomplete" | o schema tem ~18 MB; a extensão falha em silêncio e nenhuma sugestão aparece |
+| "o `requirements.txt` está vazio, nada será baixado" | o template `hello-world` traz `requests`; o pacote ficou com 4,4 MB |
+| sequência `mv` / `rm -rf` em linhas separadas | o `mv` falhou e o `rm -rf` apagou o projeto; faltava proteger com `&&` |
+
+O último caso custou o projeto inteiro e exigiu refazer o `sam init`. A lição ficou:
+**comando destrutivo nunca deve ser encadeado sem `&&` protegendo o passo anterior.**
+
+---
+
+## 7. Evidências
+
+Saídas de terminal de todas as etapas, com data e hora:
+**[`evidencias/saidas-terminal.md`](evidencias/saidas-terminal.md)**
+
+| Seção | Conteúdo |
+|---|---|
+| 1 | Ambiente: `date`, `sam --version`, `docker --version`, `python3.12 --version` |
+| 2 | `sam validate` e `sam build` com `Build Succeeded`; rótulo SELinux do código |
+| 3 | Invocação por evento: guia emitida, `REPORT`, e 3 medições de cold start com `time` |
+| 4 | Gatilho HTTP: `start-api` no ar e 4 chamadas `curl` com o contador 1→4 |
+| 5 | Estouro do limite de tempo: `Duration: 3000.00 ms` e `errResetReceived` |
+| 6 | Os 6 erros de ambiente encontrados, com a mensagem original de cada um |
+
+Capturas de tela do `curl` recebendo POST e do estouro de timeout foram registradas
+em nota separada (Obsidian).
+
