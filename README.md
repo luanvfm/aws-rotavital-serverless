@@ -147,19 +147,132 @@ por não repetir o Init.
 
 ### 3.3 Estouro do limite de tempo
 
-<!-- PREENCHER com o resultado do curl com "demorar": true -->
+Chamada com `{"requisicaoId": "R-003", "demorar": true}`, que faz a função dormir
+5 s contra um `Timeout` de 3 s declarado no `template.yaml`.
+
+**Resposta HTTP recebida:**
+
+```json
+{"message": "Internal server error"}
+```
+
+**Log do contêiner do runtime:**
+
+```
+[ERROR] (rapid) Invoke failed InvokeID=7f520c35-... error=errResetReceived
+REPORT RequestId: 7f520c35-...  Duration: 3000.00 ms  Billed Duration: 3000 ms  Memory Size: 128 MB
+```
+
+| Observação | Valor |
+|---|---|
+| `Duration` | **3000,00 ms exatos** — o ambiente cortou no milissegundo do limite |
+| `Billed Duration` | **3000 ms** — o tempo gasto até o corte **é cobrado** |
+| Erro do runtime | `errResetReceived` (o processo foi reiniciado de fora) |
+| Resposta ao cliente | `500 Internal server error` |
+
+O `time.sleep(5)` **nunca terminou**. A execução não falhou por um erro do código:
+foi interrompida pelo ambiente aplicando um limite declarado na infraestrutura.
 
 ---
 
 ## 4. Respostas
 
-<!-- ESCREVER COM AS PRÓPRIAS PALAVRAS, apoiando-se nos números da seção 3 -->
+> As respostas abaixo foram redigidas com apoio de IA a partir das medições que eu
+> executei nesta máquina (seção 3). Ver a seção 6, "Uso de IA".
 
 ### 4.1 Por que a primeira invocação demorou mais? O que acontece na fase de Init?
 
+Porque na primeira chamada não existe ambiente de execução — ele precisa ser criado
+antes de o código poder rodar. Isso é o **cold start**.
+
+Na fase de Init acontecem, em ordem: a plataforma aloca um ambiente isolado, baixa e
+descompacta o pacote da função, inicia o runtime Python, importa o `app.py` e executa
+o **código de topo do arquivo** — no meu caso a linha `contador = 0`. Só depois disso
+o `lambda_handler` é chamado. Nas chamadas seguintes, se o ambiente ainda estiver
+vivo, todos esses passos são pulados e só o handler executa.
+
+As duas medições que comprovam isso:
+
+| Comparação | Valor |
+|---|---|
+| `invoke`: tempo total de parede vs. execução | **8,019 s** contra **32,57 ms** |
+| `curl`: 1ª chamada vs. 4ª chamada | **31,10 ms** contra **0,79 ms** |
+
+No primeiro caso, 99,6% do tempo não foi o meu código: foi preparar o ambiente. No
+segundo, a mesma função ficou **39× mais rápida** apenas por não repetir o Init.
+
+Há uma ressalva honesta: o campo `Init Duration` do emulador local marcou 0,02 ms
+mesmo quando o ambiente foi recriado (ver 5.4), então ele não serve para medir cold
+start localmente — precisei usar `time` para pegar o tempo de parede. Na AWS real o
+cold start de uma função Python pequena fica tipicamente entre 200 e 800 ms.
+
+Duas coisas aumentam o cold start: **tamanho do pacote** e **trabalho no código de
+topo**. Meu pacote tem 4,4 MB por causa da biblioteca `requests`, que vem no template
+`hello-world` e a minha função nem usa — é download e descompactação desperdiçados em
+todo cold start.
+
 ### 4.2 O que o `invocacaoNesteAmbiente` mostrou com e sem `--warm-containers`? O que isso diz sobre guardar estado em variável global?
 
+| Forma de execução | O que o contador devolveu |
+|---|---|
+| `sam local invoke` (3 execuções) | **1, 1, 1** |
+| `sam local start-api` (4 chamadas) | **1, 2, 3, 4** |
+
+Com `sam local invoke`, cada execução cria e destrói o ambiente, então a variável
+global nasce zerada toda vez e o contador nunca passa de 1. Com `start-api`, o
+contêiner é reaproveitado entre as chamadas e o contador cresce.
+
+Um achado não previsto no roteiro: **o `start-api` já reaproveita o ambiente sem a
+flag `--warm-containers`**. Ao subir, ele imprime `Initializing the lambda functions
+containers` e pré-cria o contêiner. Confirmei pelo contador crescendo de 1 a 4 e pelo
+**desaparecimento do campo `Init Duration`** a partir da segunda chamada — sem
+ambiente novo, não há fase Init para relatar.
+
+Sobre guardar estado em variável global: **não se pode confiar nele.** O
+reaproveitamento é uma otimização da plataforma, não uma garantia contratual. Três
+razões concretas:
+
+1. O próximo ambiente começa zerado — e eu não controlo quando um é descartado.
+2. Invocações simultâneas rodam em ambientes **diferentes**, que não compartilham
+   memória. Dez chamadas paralelas podem ter dez contadores independentes.
+3. O valor é imprevisível: a mesma função devolveu 1 por um caminho e 4 por outro.
+
+O uso legítimo é **cache descartável**: uma conexão de banco, um cliente HTTP, uma
+configuração lida uma vez. Coisas em que perder o valor significa apenas refazer o
+trabalho, não perder informação. Estado de negócio — contagem, saldo, carrinho —
+precisa de armazenamento externo (banco, Redis, DynamoDB).
+
+Vindo de Java, o paralelo mais próximo é o `static`: ele vive enquanto a JVM estiver
+carregada, como a variável de módulo vive enquanto o ambiente de execução existir. Em
+ambos os casos se aposta na longevidade de um processo que não se controla — mas no
+Lambda esse processo é descartado de propósito, com frequência.
+
 ### 4.3 O que aconteceu com `demorar=true`? Qual o tempo máximo de uma execução no Lambda? O que fazer quando o trabalho é mais longo?
+
+A função foi **interrompida pelo ambiente**, não pelo próprio código. O
+`time.sleep(5)` nunca terminou: o `template.yaml` declara `Timeout: 3`, e o log do
+runtime registrou `Duration: 3000.00 ms` — exatamente o limite — com
+`error=errResetReceived`. O cliente recebeu `500 Internal server error`.
+
+O detalhe que mais chama atenção é o **`Billed Duration: 3000 ms`**: paga-se pelos 3
+segundos consumidos até o corte, mesmo sem receber resultado algum. Timeout mal
+dimensionado gera custo sem entregar valor.
+
+O tempo máximo de uma execução no AWS Lambda é de **15 minutos** (900 segundos). O
+padrão do SAM é 3 segundos, e é uma escolha deliberada: um limite baixo faz a falha
+aparecer rápido em vez de a função ficar pendurada consumindo tempo cobrado.
+
+Quando o trabalho é mais longo que o limite, aumentar o `Timeout` só adia o problema.
+As saídas reais são:
+
+- **Quebrar em etapas menores e coordená-las** — uma fila (SQS) ou uma máquina de
+  estados (Step Functions) encadeia várias execuções curtas, cada uma dentro do
+  limite, com reprocessamento de falhas.
+- **Processar em lote em vez de por item** — uma função trata N registros por
+  invocação e marca o progresso, de modo que a próxima continue de onde parou.
+- **Usar um serviço de execução longa** — contêiner (ECS/Fargate), job em batch ou
+  um servidor tradicional. Trabalho que leva horas simplesmente não pertence a uma
+  função serverless.
 
 ### 4.4 Conta de custo
 
@@ -167,16 +280,65 @@ Premissas: 1.000.000 de execuções/mês, 128 MB de memória, 100 ms por execuç
 US$ 0,20 por milhão de requisições e US$ 0,0000166667 por GB-segundo.
 
 ```
-requisições : 1.000.000 ÷ 1.000.000 × US$ 0,20       = US$ 0,2000
-computação  : 1.000.000 × 0,1 s × 0,125 GB           = 12.500 GB-s
-              12.500 GB-s × US$ 0,0000166667         = US$ 0,2083
-                                                       -----------
-total                                                  US$ 0,4083
+requisições : 1.000.000 ÷ 1.000.000 × US$ 0,20        = US$ 0,2000
+
+computação  : 128 MB = 0,125 GB
+              1.000.000 × 0,1 s × 0,125 GB            = 12.500 GB-s
+              12.500 GB-s × US$ 0,0000166667          = US$ 0,2083
+                                                        -----------
+total mensal                                            US$ 0,4083
 ```
 
-<!-- conferir a conta e comentar: o resultado é alto ou baixo? o que isso sugere? -->
+Menos de meio dólar por **um milhão** de execuções — algo como R$ 2,20. Para efeito
+de comparação, a menor instância EC2 ligada o mês inteiro custa alguns dólares, e
+ficaria ociosa na maior parte do tempo.
+
+Três leituras que a conta permite:
+
+1. **Para carga intermitente, serverless é dificílimo de superar em preço.** Não se
+   paga por espera, só por execução.
+2. **O custo cresce com `memória × tempo`.** Dobrar a memória dobra o preço por
+   segundo — mas, como no Lambda a CPU é proporcional à memória, uma função mais
+   "gorda" pode terminar antes e sair **mais barata**. Vale medir, não supor.
+3. **O preço não é o único critério.** Esses US$ 0,41 não contabilizam cold start,
+   limite de 15 minutos nem a dificuldade maior de depurar. Barato não é
+   automaticamente adequado.
 
 ### 4.5 Onde no Rota Vital uma função assim faria sentido, e onde não faria?
+
+**Onde faria sentido** — trabalho pontual, curto, disparado por evento e tolerante a
+algumas centenas de milissegundos de latência:
+
+- **Emitir a guia de transporte**, que é exatamente esta função: recebe um pedido,
+  gera um documento, devolve. Sem estado, sem processo longo.
+- **Notificar hospitais** quando uma bolsa é alocada (e-mail, push, WhatsApp).
+  Acontece esporadicamente e não faz sentido manter servidor ligado para isso.
+- **Gerar relatórios assíncronos** de estoque, acionados por agendamento noturno.
+- **Processar arquivos enviados** — uma planilha de doações que chega e precisa ser
+  validada e importada.
+
+**Onde não faria sentido:**
+
+- **A API principal do Rota Vital.** É um sistema de emergência médica: o cold start
+  de centenas de milissegundos na primeira requisição depois de um período de
+  silêncio é um risco que não se justifica, e a aplicação recebe tráfego constante —
+  o cenário em que servidor ligado sai mais barato e mais previsível.
+- **O banco de dados.** Serverless é sem estado por definição; dados persistentes
+  precisam de um serviço feito para isso.
+- **A stack de observabilidade** (Prometheus, Grafana, Loki, Tempo). São processos
+  que precisam rodar continuamente, raspando métricas e mantendo séries temporais —
+  o oposto de execução efêmera.
+- **Qualquer operação que ultrapasse 15 minutos**, como uma migração grande ou
+  reprocessamento histórico de rotas.
+- **Caso concreto da entrega anterior:** a listagem de estoque do Rota Vital tem um
+  problema N+1 que dispara cerca de 526 consultas por requisição. Numa função
+  serverless isso seria pior que num servidor, porque não há pool de conexões
+  reaproveitado entre execuções e cada ambiente novo precisaria reconectar ao banco.
+  O defeito precisa ser corrigido antes de qualquer discussão sobre onde hospedar.
+
+A regra que extraí: serverless combina com **trabalho que acontece de vez em quando,
+termina rápido e não guarda nada**. Quanto mais o trabalho for contínuo, demorado ou
+dependente de estado, mais o modelo atrapalha.
 
 ---
 
@@ -279,8 +441,40 @@ máquina. Resolvido com `--port 3001`.
 
 ## 6. Uso de IA
 
-<!-- declarar honestamente: o que foi perguntado, o que foi aceito, e o que foi
-     verificado ou rejeitado -->
+Usei um assistente de IA (Claude, via Hermes) como par de programação durante toda a
+atividade. Declaro abaixo o que foi feito por cada parte.
+
+**O que a IA fez:**
+
+- Explicou os conceitos (cold start, fase de Init, estado efêmero, limite de tempo,
+  `Transform` do SAM, diferença entre `&&` e `|`, rótulos do SELinux).
+- Sugeriu os comandos e explicou cada opção antes de eu executar.
+- Diagnosticou os erros de ambiente a partir das mensagens que eu colei.
+- Redigiu as respostas da seção 4 e o texto deste README, a partir das medições que
+  **eu** executei.
+
+**O que eu fiz:**
+
+- Executei todos os comandos nesta máquina e coletei as saídas e os tempos.
+- Decidi o caminho (A, local), o provedor (AWS) e o fluxo do sistema (guia de
+  transporte).
+- Escrevi o `template.yaml` e o `app.py`, com orientação.
+- Revisei as respostas antes de entregar.
+
+**O que a IA errou e foi corrigido com evidência:**
+
+Registro isto porque faz parte de usar IA com responsabilidade — as respostas dela
+não foram aceitas sem verificação:
+
+| Afirmação da IA | O que a execução mostrou |
+|---|---|
+| "você não precisa do Python 3.12 no host" | `sam build` falhou exigindo exatamente a versão do runtime |
+| "aponte a modeline para o schema do SAM e terá autocomplete" | o schema tem ~18 MB; a extensão falha em silêncio e nenhuma sugestão aparece |
+| "o `requirements.txt` está vazio, nada será baixado" | o template `hello-world` traz `requests`; o pacote ficou com 4,4 MB |
+| sequência de comandos `mv` / `rm -rf` em linhas separadas | o `mv` falhou e o `rm -rf` apagou o projeto; faltava proteger com `&&` |
+
+O último caso custou o projeto inteiro e exigiu refazer o `sam init`. A lição ficou:
+**comando destrutivo nunca deve ser encadeado sem `&&` protegendo o passo anterior.**
 
 ---
 
